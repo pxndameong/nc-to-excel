@@ -2,3 +2,4 @@ streamlit
 xarray
 pandas
 openpyxl
+h5netcdf
