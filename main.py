@@ -13,15 +13,16 @@ st.set_page_config(
     layout="wide" 
 )
 
-# Inisialisasi session state untuk menyimpan DataFrame agar bisa diakses
-if 'processed_df' not in st.session_state:
-    st.session_state['processed_df'] = None
-if 'var_metadata' not in st.session_state: # Untuk menyimpan nama variabel & ekspor
-    st.session_state['var_metadata'] = {'var_name': None, 'export_rows': 'All'}
-if 'show_preview_clicked' not in st.session_state:
-    st.session_state['show_preview_clicked'] = False
-if 'preview_configs_changed' not in st.session_state:
-    st.session_state['preview_configs_changed'] = True # Set True agar tombol tampil
+# Inisialisasi session state
+for key, default in [
+    ('processed_df', None),
+    ('var_metadata', {'var_name': None, 'export_rows': 'All'}),
+    ('show_preview_clicked', False),
+    ('preview_configs_changed', True)
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
 
 # 1. Fungsi Caching untuk Dataset (Resource)
 @st.cache_resource(show_spinner="Memuat file NetCDF...")
@@ -38,9 +39,22 @@ def convert_to_dataframe(var_name: str, _data_array: xr.DataArray) -> pd.DataFra
     df = _data_array.to_dataframe().reset_index()
     return df
 
-# 3. Fungsi Download Excel (Dipanggil langsung oleh st.download_button)
+# 3. Fungsi Download Excel (Helper function untuk dipanggil oleh st.download_button)
+def get_excel_download_bytes():
+    """Mengambil DataFrame dari state dan memprosesnya menjadi bytes Excel."""
+    df = st.session_state['processed_df']
+    var_name = st.session_state['var_metadata']['var_name']
+    export_option = st.session_state['var_metadata']['export_rows']
+    
+    # Gunakan fungsi pembuat Excel yang sudah ada
+    excel_bytes, filename = convert_to_excel_and_download(df, export_option, var_name)
+    
+    # st.download_button membutuhkan data (bytes) dan nama file (string)
+    # Kita hanya mengembalikan data bytes di sini, karena file_name akan dikembalikan di argumen terpisah
+    return excel_bytes 
+
 def convert_to_excel_and_download(df: pd.DataFrame, num_rows: str, var_name: str) -> tuple[bytes, str]:
-    """Membuat bytes Excel (dijalankan saat tombol download ditekan)."""
+    """Membuat bytes Excel."""
     
     if num_rows.lower() == 'all':
         df_export = df
@@ -87,14 +101,12 @@ if uploaded_file is not None:
                 st.warning("Dataset tidak memiliki variabel data yang dapat ditampilkan.")
                 st.stop()
 
-            # 1. Pemilihan Variabel
             selected_var = st.selectbox(
                 "Pilih variabel data:", 
                 variables,
                 key="sidebar_var_select" 
             )
 
-            # 2. Pengaturan Pratinjau
             st.subheader("Pengaturan Tampilan")
             preview_options = ["10", "50", "100", "500", "All"]
             selected_preview = st.selectbox(
@@ -104,7 +116,6 @@ if uploaded_file is not None:
                 key="sidebar_preview_rows"
             )
 
-            # 3. Pengaturan Ekspor (Hanya untuk disimpan di state)
             st.subheader("Pengaturan Ekspor Excel")
             export_options = ["All", "1000", "10000", "50000"]
             selected_export = st.selectbox(
@@ -115,16 +126,15 @@ if uploaded_file is not None:
                 help="Pilih jumlah baris yang akan dimasukkan dalam file Excel yang diunduh."
             )
             
-            # Cek jika ada perubahan pada konfigurasi pratinjau
-            # Jika variabel atau baris berubah, pratinjau harus di-refresh
-            current_config = (selected_var, selected_preview)
-            if 'last_preview_config' not in st.session_state or st.session_state['last_preview_config'] != current_config:
+            # Cek jika ada perubahan pada konfigurasi
+            current_config = (selected_var, selected_preview, selected_export)
+            if 'last_config' not in st.session_state or st.session_state['last_config'] != current_config:
                  st.session_state['preview_configs_changed'] = True
-                 st.session_state['last_preview_config'] = current_config
+                 st.session_state['last_config'] = current_config
             else:
                  st.session_state['preview_configs_changed'] = False
             
-            # Logika untuk tombol "Tampilkan Pratinjau"
+            # Tombol Tampilkan Pratinjau
             if st.button("Tampilkan Pratinjau", type="primary", disabled=st.session_state['show_preview_clicked'] and not st.session_state['preview_configs_changed']):
                 st.session_state['var_metadata']['var_name'] = selected_var
                 st.session_state['var_metadata']['export_rows'] = selected_export
@@ -136,6 +146,7 @@ if uploaded_file is not None:
         if st.session_state['show_preview_clicked']:
             
             var = st.session_state['var_metadata']['var_name']
+            export_option = st.session_state['var_metadata']['export_rows']
             
             st.subheader(f"Hasil Konfigurasi Data: `{var}`")
             
@@ -161,7 +172,6 @@ if uploaded_file is not None:
                 # --- Tampilkan Tabel Pratinjau ---
                 st.subheader("Tabel Pratinjau")
                 
-                # Gunakan nilai yang terakhir dipilih (saat tombol Pratinjau ditekan)
                 if selected_preview.lower() == 'all':
                     st.info(f"Menampilkan **SEMUA** {total_rows:,} baris data.")
                     st.dataframe(df, use_container_width=True)
@@ -174,15 +184,14 @@ if uploaded_file is not None:
                 st.markdown("---")
                 st.subheader("Opsi Unduh Excel")
                 
-                export_option = st.session_state['var_metadata']['export_rows']
-                df_to_download = st.session_state['processed_df']
+                # Mendapatkan nama file yang benar untuk tombol unduh
+                _, filename = convert_to_excel_and_download(df, export_option, var)
                 
-                # Tombol unduh diproses sebagai aksi terpisah
+                # PENTING: Menggunakan fungsi pembantu (get_excel_download_bytes) yang sudah disederhanakan
                 st.download_button(
-                    label=f"⬇️ Klik untuk Unduh Data ({export_option} Baris) sebagai XLSX",
-                    # Gunakan lambda function untuk menjalankan fungsi pemrosesan saat tombol DITEKAN
-                    data=lambda: convert_to_excel_and_download(df_to_download, export_option, var)[0],
-                    file_name=lambda: convert_to_excel_and_download(df_to_download, export_option, var)[1],
+                    label=f"⬇️ Unduh Data '{var}' ({export_option} Baris) sebagai XLSX",
+                    data=get_excel_download_bytes, # Panggil fungsi tanpa () untuk mendapatkan callable
+                    file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_excel_final"
                 )
@@ -201,9 +210,8 @@ if uploaded_file is not None:
 
 # Di luar blok if uploaded_file is not None:
 else:
+    # Reset semua state saat tidak ada file
     st.cache_resource.clear()
-    # Reset semua state
-    st.session_state['processed_df'] = None
-    st.session_state['var_metadata'] = {'var_name': None, 'export_rows': 'All'}
-    st.session_state['show_preview_clicked'] = False
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
     st.info("Silakan unggah file NetCDF (.nc) Anda di atas untuk memulai.")
