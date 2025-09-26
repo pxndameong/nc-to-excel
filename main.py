@@ -3,32 +3,46 @@ import xarray as xr
 import pandas as pd
 from io import BytesIO
 
+# ====================================================================
+# A. KONFIGURASI DAN FUNGSI CACHING
+# ====================================================================
+
 # Set konfigurasi halaman
 st.set_page_config(
     page_title="NC File Viewer",
     layout="wide" 
 )
 
-# --- Fungsi Caching ---
-
-# Gunakan st.cache_resource untuk objek xarray.Dataset
+# 1. Fungsi Caching untuk Dataset (Resource)
 @st.cache_resource(show_spinner="Memuat file NetCDF...")
 def load_netcdf_file(file_bytes: bytes) -> xr.Dataset:
-    """Memuat file NetCDF menggunakan xarray.open_dataset dari bytes file yang diunggah."""
+    """
+    Memuat file NetCDF menggunakan xarray.open_dataset dari bytes file.
+    Menggunakan st.cache_resource karena objek xarray.Dataset kompleks.
+    """
     with xr.open_dataset(BytesIO(file_bytes)) as ds:
+        # PENTING: Gunakan .load() untuk memastikan data ditarik ke memori.
         return ds.load() 
 
-# Gunakan st.cache_data untuk hasil konversi data (Pandas DataFrame)
+# 2. Fungsi Caching untuk Konversi ke DataFrame (Data)
 @st.cache_data(show_spinner="Mempersiapkan data variabel...")
-def convert_to_dataframe(_data_array: xr.DataArray) -> pd.DataFrame:
-    """Mengubah xarray.DataArray menjadi Pandas DataFrame."""
-    df = _data_array.to_dataframe().reset_index()
+def convert_to_dataframe(var_name: str, data_array: xr.DataArray) -> pd.DataFrame:
+    """
+    Mengubah xarray.DataArray menjadi Pandas DataFrame.
+    'var_name' digunakan sebagai kunci caching untuk memastikan refresh.
+    """
+    # Muat DataArray secara eksplisit sebelum konversi
+    data_array.load() 
+    
+    # Konversi ke DataFrame dan reset index (koordinat menjadi kolom)
+    df = data_array.to_dataframe().reset_index()
     return df
 
-# --- Fungsi Download Excel ---
-
+# 3. Fungsi Download Excel
 def convert_to_excel_and_download(df: pd.DataFrame, num_rows: str, var_name: str) -> tuple[bytes, str]:
     """Mengubah DataFrame menjadi file Excel (.xlsx) dengan batasan baris tertentu."""
+    
+    # Tentukan batas ekspor
     if num_rows.lower() == 'all':
         df_export = df
         suffix = "ALL"
@@ -38,42 +52,46 @@ def convert_to_excel_and_download(df: pd.DataFrame, num_rows: str, var_name: str
             df_export = df.head(limit)
             suffix = f"Top{limit}"
         except ValueError:
-            # Fallback jika input tidak valid
             df_export = df.head(100)
             suffix = "Top100"
 
     output = BytesIO()
+    # Pastikan 'xlsxwriter' terinstal
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_export.to_excel(writer, index=False, sheet_name=var_name)
     
     processed_data = output.getvalue()
     return processed_data, f"{var_name}_{suffix}.xlsx"
 
-# --- Aplikasi Streamlit ---
+# ====================================================================
+# B. APLIKASI STREAMLIT UTAMA
+# ====================================================================
 
 st.title("NC File Viewer 🔎")
 st.markdown("Unggah file **NetCDF (.nc)** Anda, lalu gunakan **Sidebar** untuk mengonfigurasi tampilan data.")
 
-# Unggah file
+# --- Unggah File ---
 uploaded_file = st.file_uploader("Pilih file NetCDF (.nc)", type="nc")
 
-# Logika aplikasi berjalan jika file diunggah
 if uploaded_file is not None:
     
-    # Baca file sebagai bytes
+    # Ambil bytes dari file yang diunggah
     file_bytes = uploaded_file.getvalue()
     
     try:
-        # Muat Dataset menggunakan cache resource
+        # Muat Dataset (sekali berkat caching)
         ds = load_netcdf_file(file_bytes)
-        st.success("File NetCDF berhasil dimuat! 🎉 Sekarang, konfigurasikan tampilan di Sidebar.")
         
-        variables = list(ds.data_vars.keys())
-
-        # --- Bagian Sidebar untuk Konfigurasi ---
+        # --- Sidebar Konfigurasi ---
         with st.sidebar:
             st.header("⚙️ Konfigurasi Data")
             
+            variables = list(ds.data_vars.keys())
+
+            if not variables:
+                st.warning("Dataset tidak memiliki variabel data yang dapat ditampilkan.")
+                st.stop()
+
             # 1. Pemilihan Variabel
             selected_var = st.selectbox(
                 "Pilih variabel data:", 
@@ -81,18 +99,17 @@ if uploaded_file is not None:
                 key="sidebar_var_select" 
             )
 
-            # --- Pengaturan Pratinjau ---
+            # 2. Pengaturan Pratinjau
             st.subheader("Pengaturan Pratinjau")
-            preview_options = ["5", "10", "50", "100", "All"]
+            preview_options = ["10", "50", "100", "500", "All"]
             selected_preview = st.selectbox(
                 "Jumlah Baris Pratinjau:",
                 preview_options,
-                index=1, # Default 10 baris
-                key="sidebar_preview_rows",
-                help="Pilih jumlah baris yang akan ditampilkan di layar utama."
+                index=0, # Default 10 baris
+                key="sidebar_preview_rows"
             )
 
-            # --- Pengaturan Ekspor ---
+            # 3. Pengaturan Ekspor
             st.subheader("Pengaturan Ekspor Excel")
             export_options = ["All", "1000", "10000", "50000"]
             selected_export = st.selectbox(
@@ -103,23 +120,21 @@ if uploaded_file is not None:
                 help="Pilih jumlah baris yang akan dimasukkan dalam file Excel yang diunduh."
             )
             
-            # 2. Tombol Submit (Terapkan Konfigurasi)
-            # Tombol ini akan mengaktifkan logika tampilan data
+            # 4. Tombol Submit
             submit_button = st.button("Terapkan Konfigurasi", type="primary")
 
-        # --- Tampilan Utama Data ---
+        # --- Tampilan Utama Hasil ---
 
-        if submit_button and selected_var:
+        if submit_button:
             st.subheader(f"Hasil Konfigurasi Data: `{selected_var}`")
             
             try:
-                # 1. Konversi data dan dapatkan total baris
+                # 1. Konversi Data ke DataFrame (sekali berkat caching)
                 data_array = ds[selected_var]
-                df = convert_to_dataframe(data_array) 
+                df = convert_to_dataframe(selected_var, data_array) 
                 total_rows = len(df)
 
                 # --- Informasi & Statistik ---
-                
                 col_info, col_stat = st.columns([1, 2])
                 
                 with col_info:
@@ -134,7 +149,6 @@ if uploaded_file is not None:
                 # --- Tampilkan Pratinjau Data ---
                 st.subheader("Tabel Pratinjau")
                 
-                # Tentukan batas pratinjau
                 if selected_preview.lower() == 'all':
                     st.info(f"Menampilkan **SEMUA** {total_rows:,} baris data.")
                     st.dataframe(df, use_container_width=True)
@@ -147,7 +161,6 @@ if uploaded_file is not None:
                 st.markdown("---")
                 st.subheader("Opsi Unduh")
                 
-                # Hasilkan data Excel berdasarkan konfigurasi ekspor
                 excel_data, filename = convert_to_excel_and_download(df, selected_export, selected_var)
                 
                 st.download_button(
@@ -159,7 +172,7 @@ if uploaded_file is not None:
                 )
 
             except Exception as e:
-                st.error(f"Terjadi kesalahan saat memproses data variabel '{selected_var}': {e}")
+                st.error(f"Terjadi kesalahan saat memproses data variabel '{selected_var}'. Cek terminal untuk detail error. Kesalahan: {e}")
         
         # --- Informasi Dataset (Selalu Tampil) ---
         st.markdown("---")
@@ -167,9 +180,12 @@ if uploaded_file is not None:
         st.code(str(ds), language='text') 
 
     except Exception as e:
+        # Jika terjadi error saat memuat file (misalnya, file rusak)
         st.error(f"Gagal memuat file NetCDF. Pastikan file berformat .nc yang valid. Kesalahan: {e}")
 
 # Di luar blok if uploaded_file is not None:
 else:
-    # Bersihkan cache saat tidak ada file terunggah
+    # Bersihkan cache resource saat tidak ada file terunggah, penting untuk reset state.
     st.cache_resource.clear()
+    # Tampilkan petunjuk awal
+    st.info("Silakan unggah file NetCDF (.nc) Anda di atas untuk memulai.")
