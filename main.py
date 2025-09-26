@@ -7,7 +7,7 @@ from io import BytesIO
 # A. KONFIGURASI DAN FUNGSI CACHING
 # ====================================================================
 
-# Set konfigurasi halaman
+# Set konfigurasi halaman Streamlit
 st.set_page_config(
     page_title="NC File Viewer",
     layout="wide" 
@@ -18,7 +18,7 @@ st.set_page_config(
 def load_netcdf_file(file_bytes: bytes) -> xr.Dataset:
     """
     Memuat file NetCDF menggunakan xarray.open_dataset dari bytes file.
-    Menggunakan st.cache_resource karena objek xarray.Dataset kompleks.
+    Menggunakan st.cache_resource untuk objek xarray.Dataset yang kompleks.
     """
     with xr.open_dataset(BytesIO(file_bytes)) as ds:
         # PENTING: Gunakan .load() untuk memastikan data ditarik ke memori.
@@ -26,16 +26,17 @@ def load_netcdf_file(file_bytes: bytes) -> xr.Dataset:
 
 # 2. Fungsi Caching untuk Konversi ke DataFrame (Data)
 @st.cache_data(show_spinner="Mempersiapkan data variabel...")
-def convert_to_dataframe(var_name: str, data_array: xr.DataArray) -> pd.DataFrame:
+def convert_to_dataframe(var_name: str, _data_array: xr.DataArray) -> pd.DataFrame:
     """
     Mengubah xarray.DataArray menjadi Pandas DataFrame.
-    'var_name' digunakan sebagai kunci caching untuk memastikan refresh.
+    'var_name' adalah kunci caching yang andal.
+    '_data_array' diabaikan dari hashing untuk mencegah error.
     """
     # Muat DataArray secara eksplisit sebelum konversi
-    data_array.load() 
+    _data_array.load() 
     
     # Konversi ke DataFrame dan reset index (koordinat menjadi kolom)
-    df = data_array.to_dataframe().reset_index()
+    df = _data_array.to_dataframe().reset_index()
     return df
 
 # 3. Fungsi Download Excel
@@ -52,6 +53,7 @@ def convert_to_excel_and_download(df: pd.DataFrame, num_rows: str, var_name: str
             df_export = df.head(limit)
             suffix = f"Top{limit}"
         except ValueError:
+            # Fallback jika input tidak valid
             df_export = df.head(100)
             suffix = "Top100"
 
@@ -131,6 +133,7 @@ if uploaded_file is not None:
             try:
                 # 1. Konversi Data ke DataFrame (sekali berkat caching)
                 data_array = ds[selected_var]
+                # Panggil fungsi dengan _data_array
                 df = convert_to_dataframe(selected_var, data_array) 
                 total_rows = len(df)
 
@@ -172,7 +175,8 @@ if uploaded_file is not None:
                 )
 
             except Exception as e:
-                st.error(f"Terjadi kesalahan saat memproses data variabel '{selected_var}'. Cek terminal untuk detail error. Kesalahan: {e}")
+                # Tampilkan error di UI untuk debugging cepat
+                st.error(f"Terjadi kesalahan saat memproses data variabel '{selected_var}'. Kesalahan: {e}")
         
         # --- Informasi Dataset (Selalu Tampil) ---
         st.markdown("---")
@@ -185,7 +189,6 @@ if uploaded_file is not None:
 
 # Di luar blok if uploaded_file is not None:
 else:
-    # Bersihkan cache resource saat tidak ada file terunggah, penting untuk reset state.
+    # Bersihkan cache resource saat tidak ada file terunggah
     st.cache_resource.clear()
-    # Tampilkan petunjuk awal
     st.info("Silakan unggah file NetCDF (.nc) Anda di atas untuk memulai.")
