@@ -3,3 +3,4 @@ xarray
 pandas
 openpyxl
 h5netcdf
+xlsxwriter
