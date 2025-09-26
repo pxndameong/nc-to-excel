@@ -10,18 +10,17 @@ st.set_page_config(
 
 # --- Fungsi Caching ---
 
-# Menggunakan cache data untuk menyimpan dataset xarray agar tidak dimuat ulang
-@st.cache_data(show_spinner="Memuat file NetCDF...")
+# GANTI @st.cache_data menjadi @st.cache_resource untuk objek kompleks seperti xarray.Dataset
+@st.cache_resource(show_spinner="Memuat file NetCDF...")
 def load_netcdf_file(file_object):
     """
     Memuat file NetCDF menggunakan xarray.open_dataset.
-    File_object adalah BytesIO dari file yang diunggah.
     """
     # xr.open_dataset dapat menerima file-like object
     ds = xr.open_dataset(file_object)
     return ds
 
-# Menggunakan cache data untuk menyimpan DataFrame agar tidak dikonversi ulang
+# Gunakan @st.cache_data untuk hasil konversi data (Pandas DataFrame)
 @st.cache_data(show_spinner="Mempersiapkan data variabel...")
 def convert_to_dataframe(data_array):
     """
@@ -39,9 +38,9 @@ st.markdown("Unggah file **NetCDF (.nc)** Anda untuk melihat informasi dataset d
 uploaded_file = st.file_uploader("Pilih file NetCDF (.nc)", type="nc")
 
 if uploaded_file is not None:
-    # 1. Muat file sekali dan cache hasilnya
     try:
         # Panggil fungsi caching untuk memuat dataset
+        # Objek ds sekarang di-cache sebagai "resource"
         ds = load_netcdf_file(uploaded_file)
         
         st.success("File NetCDF berhasil dimuat! 🎉")
@@ -51,9 +50,7 @@ if uploaded_file is not None:
         ## Informasi Dataset (Metadata)
         
         st.subheader("Informasi Dataset")
-        # Menampilkan representasi string dari dataset
         st.code(str(ds), language='text') 
-        # Menggunakan st.code agar output format xarray lebih rapi
         
         st.markdown("---")
         
@@ -61,28 +58,24 @@ if uploaded_file is not None:
         
         st.subheader("Data Variabel")
         
-        # Membuat list dari semua variabel data
         variables = list(ds.data_vars)
         
         if variables:
-            # 2. Dropdown menu untuk memilih variabel
             selected_var = st.selectbox(
                 "Pilih variabel untuk melihat data", 
                 variables,
-                key="var_select" # Tambahkan key untuk identifikasi state
+                key="var_select" 
             )
             
             if selected_var:
-                # 3. Muat/Konversi data variabel yang dipilih ke DataFrame (dan cache hasilnya)
                 try:
                     data_array = ds[selected_var]
-                    df = convert_to_dataframe(data_array)
+                    # DataFrame di-cache sebagai "data"
+                    df = convert_to_dataframe(data_array) 
                     
                     st.write(f"**Pratinjau 5 baris pertama dari variabel '{selected_var}':**")
-                    # Tampilkan 5 baris pertama
                     st.dataframe(df.head(), use_container_width=True)
                     
-                    # Opsi untuk menampilkan data lengkap 
                     st.markdown("---")
                     
                     if st.checkbox("Tampilkan semua data", help="Tampilkan semua data (hati-hati, bisa lambat untuk file besar)"):
@@ -98,5 +91,6 @@ if uploaded_file is not None:
 
 # Di luar blok if uploaded_file is not None:
 else:
-    # Menghapus cache saat file baru diunggah atau file lama dihapus
-    st.cache_data.clear()
+    # Ini penting untuk membersihkan cache ketika file baru diunggah
+    # st.cache_resource.clear()
+    pass # st.cache_resource secara otomatis membersihkan ketika hash input berubah
