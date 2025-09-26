@@ -13,14 +13,15 @@ st.set_page_config(
     layout="wide" 
 )
 
-# Inisialisasi session state untuk menyimpan DataFrame agar bisa diakses oleh tombol Download
+# Inisialisasi session state untuk menyimpan DataFrame agar bisa diakses
 if 'processed_df' not in st.session_state:
     st.session_state['processed_df'] = None
-if 'selected_var' not in st.session_state:
-    st.session_state['selected_var'] = None
-if 'selected_export' not in st.session_state:
-    st.session_state['selected_export'] = 'All'
-
+if 'var_metadata' not in st.session_state: # Untuk menyimpan nama variabel & ekspor
+    st.session_state['var_metadata'] = {'var_name': None, 'export_rows': 'All'}
+if 'show_preview_clicked' not in st.session_state:
+    st.session_state['show_preview_clicked'] = False
+if 'preview_configs_changed' not in st.session_state:
+    st.session_state['preview_configs_changed'] = True # Set True agar tombol tampil
 
 # 1. Fungsi Caching untuk Dataset (Resource)
 @st.cache_resource(show_spinner="Memuat file NetCDF...")
@@ -37,10 +38,9 @@ def convert_to_dataframe(var_name: str, _data_array: xr.DataArray) -> pd.DataFra
     df = _data_array.to_dataframe().reset_index()
     return df
 
-# 3. Fungsi Download Excel
-# Fungsi ini tidak perlu dicache karena hanya menghasilkan output bytes
+# 3. Fungsi Download Excel (Dipanggil langsung oleh st.download_button)
 def convert_to_excel_and_download(df: pd.DataFrame, num_rows: str, var_name: str) -> tuple[bytes, str]:
-    """Mengubah DataFrame menjadi file Excel (.xlsx) dengan batasan baris tertentu."""
+    """Membuat bytes Excel (dijalankan saat tombol download ditekan)."""
     
     if num_rows.lower() == 'all':
         df_export = df
@@ -66,7 +66,7 @@ def convert_to_excel_and_download(df: pd.DataFrame, num_rows: str, var_name: str
 # ====================================================================
 
 st.title("NC File Viewer 🔎")
-st.markdown("Unggah file **NetCDF (.nc)** Anda, lalu gunakan **Sidebar** untuk mengonfigurasi data dan klik **'Tampilkan Pratinjau'**.")
+st.markdown("Unggah file **NetCDF (.nc)**, konfigurasikan di **Sidebar**, lalu klik **'Tampilkan Pratinjau'** sebelum mengunduh.")
 
 # --- Unggah File ---
 uploaded_file = st.file_uploader("Pilih file NetCDF (.nc)", type="nc")
@@ -83,7 +83,6 @@ if uploaded_file is not None:
             st.header("⚙️ Konfigurasi Data")
             
             variables = list(ds.data_vars.keys())
-
             if not variables:
                 st.warning("Dataset tidak memiliki variabel data yang dapat ditampilkan.")
                 st.stop()
@@ -105,7 +104,7 @@ if uploaded_file is not None:
                 key="sidebar_preview_rows"
             )
 
-            # 3. Pengaturan Ekspor
+            # 3. Pengaturan Ekspor (Hanya untuk disimpan di state)
             st.subheader("Pengaturan Ekspor Excel")
             export_options = ["All", "1000", "10000", "50000"]
             selected_export = st.selectbox(
@@ -116,30 +115,27 @@ if uploaded_file is not None:
                 help="Pilih jumlah baris yang akan dimasukkan dalam file Excel yang diunduh."
             )
             
-            # Tombol "Tampilkan Pratinjau" berada di luar sidebar agar lebih terlihat
-            # (Namun, untuk konsistensi, kita tempatkan logika tombolnya di luar block with st.sidebar)
-
-
-        # --- Tampilan Utama: Tombol Aksi ---
-        col_btn_preview, col_btn_download = st.columns([1, 1])
-
-        with col_btn_preview:
-            # Tombol untuk memicu pemrosesan data dan menampilkan hasil
-            if st.button("Tampilkan Pratinjau", type="primary"):
-                # Simpan konfigurasi ke session state saat tombol ditekan
-                st.session_state['selected_var'] = selected_var
-                st.session_state['selected_export'] = selected_export
+            # Cek jika ada perubahan pada konfigurasi pratinjau
+            # Jika variabel atau baris berubah, pratinjau harus di-refresh
+            current_config = (selected_var, selected_preview)
+            if 'last_preview_config' not in st.session_state or st.session_state['last_preview_config'] != current_config:
+                 st.session_state['preview_configs_changed'] = True
+                 st.session_state['last_preview_config'] = current_config
+            else:
+                 st.session_state['preview_configs_changed'] = False
+            
+            # Logika untuk tombol "Tampilkan Pratinjau"
+            if st.button("Tampilkan Pratinjau", type="primary", disabled=st.session_state['show_preview_clicked'] and not st.session_state['preview_configs_changed']):
+                st.session_state['var_metadata']['var_name'] = selected_var
+                st.session_state['var_metadata']['export_rows'] = selected_export
                 st.session_state['show_preview_clicked'] = True
-                # Rerun script untuk menampilkan data
                 st.rerun()
 
-        # --- Logika Pemrosesan dan Tampilan Data ---
-
-        # Tampilkan hasil hanya jika tombol 'Tampilkan Pratinjau' sudah ditekan
-        if st.session_state.get('show_preview_clicked'):
+        # --- Tampilan Utama Hasil ---
+        
+        if st.session_state['show_preview_clicked']:
             
-            # Ambil konfigurasi dari session state
-            var = st.session_state['selected_var']
+            var = st.session_state['var_metadata']['var_name']
             
             st.subheader(f"Hasil Konfigurasi Data: `{var}`")
             
@@ -162,10 +158,10 @@ if uploaded_file is not None:
 
                 st.markdown("---")
                 
-                # --- Tampilkan Pratinjau Data ---
+                # --- Tampilkan Tabel Pratinjau ---
                 st.subheader("Tabel Pratinjau")
                 
-                # Tentukan batas pratinjau berdasarkan nilai dari sidebar saat ini
+                # Gunakan nilai yang terakhir dipilih (saat tombol Pratinjau ditekan)
                 if selected_preview.lower() == 'all':
                     st.info(f"Menampilkan **SEMUA** {total_rows:,} baris data.")
                     st.dataframe(df, use_container_width=True)
@@ -176,27 +172,24 @@ if uploaded_file is not None:
 
                 # --- Tombol Unduh Excel ---
                 st.markdown("---")
-                st.subheader("Opsi Unduh")
-
-                # Tombol unduh dipisahkan, hanya muncul setelah pratinjau
+                st.subheader("Opsi Unduh Excel")
+                
+                export_option = st.session_state['var_metadata']['export_rows']
                 df_to_download = st.session_state['processed_df']
-                export_option = st.session_state['selected_export']
                 
-                excel_data, filename = convert_to_excel_and_download(df_to_download, export_option, var)
-                
-                # Tampilkan tombol unduh di kolom terpisah
-                with col_btn_download:
-                    st.download_button(
-                        label=f"⬇️ Unduh Excel ({export_option} Baris)",
-                        data=excel_data,
-                        file_name=filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="download_excel_final"
-                    )
+                # Tombol unduh diproses sebagai aksi terpisah
+                st.download_button(
+                    label=f"⬇️ Klik untuk Unduh Data ({export_option} Baris) sebagai XLSX",
+                    # Gunakan lambda function untuk menjalankan fungsi pemrosesan saat tombol DITEKAN
+                    data=lambda: convert_to_excel_and_download(df_to_download, export_option, var)[0],
+                    file_name=lambda: convert_to_excel_and_download(df_to_download, export_option, var)[1],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_excel_final"
+                )
 
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses data variabel '{var}'. Kesalahan: {e}")
-                st.session_state['show_preview_clicked'] = False # Reset state on error
+                st.session_state['show_preview_clicked'] = False
         
         # --- Informasi Dataset (Selalu Tampil) ---
         st.markdown("---")
@@ -209,8 +202,8 @@ if uploaded_file is not None:
 # Di luar blok if uploaded_file is not None:
 else:
     st.cache_resource.clear()
-    # Bersihkan state saat tidak ada file, penting untuk reset
+    # Reset semua state
     st.session_state['processed_df'] = None
-    st.session_state['selected_var'] = None
+    st.session_state['var_metadata'] = {'var_name': None, 'export_rows': 'All'}
     st.session_state['show_preview_clicked'] = False
     st.info("Silakan unggah file NetCDF (.nc) Anda di atas untuk memulai.")
